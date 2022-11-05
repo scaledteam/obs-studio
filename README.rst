@@ -2,11 +2,24 @@ Goal of this fork to add dmabuf support
 -------------------
 Most of the code made by w23 (https://github.com/w23/) , scaledteam fixed bug with frame drops, fixed losting capture after switching between fullscreen windows and ported it into latest OBS Studio.
 
-Important note while building
+Important notes while building
 -------------------
 Since dmabuf (kmsgrab) capture require root to work, to make it usable from user account you need to add special caps to it:
 
 ``sudo setcap cap_sys_admin+ep  /usr/local/bin/obs``
+
+While building you can encounter strange problem, 
+``CMake Warning at CMakeLists.txt:15 (project):
+  VERSION keyword not followed by a value or was followed by a value that
+  expanded to nothing.
+``
+To fix it you need to add version number manually
+``cmake .. -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
+
+My personal setup
+-------------------
+I compiled obs-studio with this parameters in Debian Testing (2022-11-04).
+``cmake .. -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLEVLC=OFF -DENABLE_BROWSER=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DENABLE_AJA=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
 
 
 OBS Studio <https://obsproject.com>
