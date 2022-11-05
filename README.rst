@@ -19,7 +19,8 @@ To fix it you need to add version number manually
 
 My personal setup
 -------------------
-I compiled obs-studio with this parameters in Debian Testing (2022-11-04).
+I use Debian Testing (2022-11-04) with Gnome and X11, obs-studio compiled with this parameters:
+
 ``cmake .. -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLEVLC=OFF -DENABLE_BROWSER=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DENABLE_AJA=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
 
 
