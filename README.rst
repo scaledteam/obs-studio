@@ -9,10 +9,11 @@ Since dmabuf (kmsgrab) capture require root to work, to make it usable from user
 ``sudo setcap cap_sys_admin+ep  /usr/local/bin/obs``
 
 While building you can encounter strange problem, 
-``CMake Warning at CMakeLists.txt:15 (project):
+
+  CMake Warning at CMakeLists.txt:15 (project):
   VERSION keyword not followed by a value or was followed by a value that
   expanded to nothing.
-``
+
 To fix it you need to add version number manually
 ``cmake .. -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
 
