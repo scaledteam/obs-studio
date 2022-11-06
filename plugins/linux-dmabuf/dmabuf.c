@@ -65,9 +65,6 @@ typedef struct {
 	EGLDisplay edisp;
 	EGLImage eimage;
 
-	//dmabuf_source_fblist_t fbs;
-	int active_fb;
-
 	bool show_cursor;
 	
 	// my
@@ -129,24 +126,11 @@ static void dmabuf_source_close(dmabuf_source_t *ctx)
 		eglDestroyImage(ctx->edisp, ctx->eimage);
 		ctx->eimage = EGL_NO_IMAGE;
 	}
-
-	ctx->active_fb = -1;
 }
 
-static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
+static void dmabuf_source_open(dmabuf_source_t *ctx)
 {
-	blog(LOG_DEBUG, "dmabuf_source_open %p %#x", ctx, fb_id);
-	/*assert(ctx->active_fb == -1);
-
-	int index;
-	for (index = 0; index < ctx->fbs.resp.num_framebuffers; ++index)
-		if (fb_id == ctx->fbs.resp.framebuffers[index].fb_id)
-			break;
-
-	if (index == ctx->fbs.resp.num_framebuffers) {
-		blog(LOG_ERROR, "Framebuffer id=%#x not found", fb_id);
-		return;
-	}*/
+	blog(LOG_DEBUG, "dmabuf_source_open %p %#x", ctx);
 	dmabuf_source_t *context = ctx;
 	
 	const char *card = "/dev/dri/card0";
@@ -166,7 +150,7 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 		
 	// Find DRM video source
 	//uint32_t fb_id = prepareImage(ctx, drmfd);
-	fb_id = prepareImage(ctx, drmfd);
+	uint32_t fb_id = prepareImage(ctx, drmfd);
 	//blog(LOG_INFO, "Got fb_id=%#x", fb_id);
 
 	if (fb_id == 0) {
@@ -228,8 +212,8 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 	}
 
 	// FIXME handle fourcc?
-	ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1,
-					 NULL, GS_DYNAMIC);
+	if (!ctx->texture)
+		ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
 	const GLuint gltex = *(GLuint *)gs_texture_get_obj(ctx->texture);
 	blog(LOG_DEBUG, "gltex = %x", gltex);
 	glBindTexture(GL_TEXTURE_2D, gltex);
@@ -237,8 +221,6 @@ static void dmabuf_source_open(dmabuf_source_t *ctx, uint32_t fb_id)
 	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, ctx->eimage);
 	//glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	//glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-	//ctx->active_fb = index;
 
 exit:
 	obs_leave_graphics();
@@ -253,7 +235,7 @@ static void dmabuf_source_update(void *data, obs_data_t *settings)
 	ctx->show_cursor = obs_data_get_bool(settings, "show_cursor");
 
 	dmabuf_source_close(ctx);
-	dmabuf_source_open(ctx, obs_data_get_int(settings, "framebuffer"));
+	dmabuf_source_open(ctx);
 }
 
 static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
@@ -288,19 +270,8 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 
 	dmabuf_source_t *ctx = bzalloc(sizeof(dmabuf_source_t));
 	ctx->source = source;
-	ctx->active_fb = -1;
 
-#define COUNTOF(a) (sizeof(a) / sizeof(*a))
-	/*for (int i = 0; i < (int)COUNTOF(ctx->fbs.fb_fds); ++i) {
-		ctx->fbs.fb_fds[i] = -1;
-	}
-
-	if (!dmabuf_source_receive_framebuffers(&ctx->fbs)) {
-		blog(LOG_ERROR, "Unable to enumerate DRM/KMS framebuffers");
-		bfree(ctx);
-		return NULL;
-	}*/
-
+	// cursor
 	ctx->xcb = xcb_connect(NULL, NULL);
 	if (!ctx->xcb || xcb_connection_has_error(ctx->xcb)) {
 		blog(LOG_ERROR,
@@ -315,11 +286,6 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 
 static void dmabuf_source_close_fds(dmabuf_source_t *ctx)
 {
-	/*for (int i = 0; i < ctx->fbs.resp.num_framebuffers; ++i) {
-		const int fd = ctx->fbs.fb_fds[i];
-		if (fd > 0)
-			close(fd);
-	}*/
 	if (ctx->dma_buf_fd >= 0)
 		close(ctx->dma_buf_fd);
 	if (ctx->fb)
@@ -347,30 +313,6 @@ static void dmabuf_source_destroy(void *data)
 		xcb_disconnect(ctx->xcb);
 
 	bfree(data);
-}
-
-static void dmabuf_source_video_tick(void *data, float seconds)
-{
-	UNUSED_PARAMETER(seconds);
-	dmabuf_source_t *ctx = data;
-
-	if (!ctx->texture)
-		return;
-	if (!obs_source_showing(ctx->source))
-		return;
-	/*if (!ctx->cursor)
-		return;
-
-	xcb_xfixes_get_cursor_image_cookie_t cur_c =
-		xcb_xfixes_get_cursor_image_unchecked(ctx->xcb);
-	xcb_xfixes_get_cursor_image_reply_t *cur_r =
-		xcb_xfixes_get_cursor_image_reply(ctx->xcb, cur_c, NULL);
-
-	obs_enter_graphics();
-	xcb_xcursor_update(ctx->cursor, cur_r);
-	obs_leave_graphics();
-
-	free(cur_r);*/
 }
 
 static void dmabuf_source_render(void *data, gs_effect_t *effect)
@@ -429,18 +371,11 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 		glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, ctx->eimage);
 	}
 
-	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
-	gs_effect_set_texture(image, ctx->texture);
-
-	while (gs_effect_loop(effect, "Draw")) {
-		gs_draw_sprite(ctx->texture, 0, 0, 0);
-	}
+	gs_draw_sprite(ctx->texture, 0, 0, 0);
 
 	if (ctx->show_cursor && ctx->cursor) {
 		xcb_xcursor_update(ctx->xcb, ctx->cursor);
-		while (gs_effect_loop(effect, "Draw")) {
-			xcb_xcursor_render(ctx->cursor);
-		}
+		xcb_xcursor_render(ctx->cursor);
 	}
 }
 
@@ -506,11 +441,10 @@ struct obs_source_info dmabuf_input = {
 	.id = "dmabuf-source",
 	.type = OBS_SOURCE_TYPE_INPUT,
 	.get_name = dmabuf_source_get_name,
-	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW |
+	.output_flags = OBS_SOURCE_VIDEO |
 			OBS_SOURCE_DO_NOT_DUPLICATE,
 	.create = dmabuf_source_create,
 	.destroy = dmabuf_source_destroy,
-	.video_tick = dmabuf_source_video_tick,
 	.video_render = dmabuf_source_render,
 	.get_width = dmabuf_source_get_width,
 	.get_height = dmabuf_source_get_height,
