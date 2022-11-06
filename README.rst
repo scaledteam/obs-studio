@@ -1,5 +1,7 @@
-Goal of this fork to add dmabuf support
+Goal of this fork to add kmsgrab support
 -------------------
+KMSGrab is a zero-copy method of capturing screen in GNU/Linux. This plugin adds kmsgrab functionality into OBS Studio.
+
 Most of the code made by w23 (https://github.com/w23/) , scaledteam fixed bug with frame drops, fixed losting capture after switching between fullscreen windows and ported it into latest OBS Studio.
 
 Important notes while building
