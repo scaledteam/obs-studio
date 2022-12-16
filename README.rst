@@ -19,11 +19,29 @@ While building you can encounter strange problem,
 To fix it you need to add version number manually
 ``cmake .. -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
 
+General guide to building
+-------------------
+``git clone https://github.com/scaledteam/obs-studio``
+
+``mkdir build``
+
+``cd build``
+
+``cmake .. -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLEVLC=OFF -DENABLE_BROWSER=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DENABLE_AJA=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
+
+``make -j$(nproc)``
+
+``sudo checkinstall --default --fstrans=no --backup=no --pkgversion="$(date +%Y%m%d)" --deldoc=yes --pkgname=obs-studio-local-kmsgrab``
+
+``sudo ldconfig``
+
+``sudo setcap cap_sys_admin+ep /usr/local/bin/obs``
+
 My personal setup
 -------------------
 I use Debian Testing (2022-11-04) with Gnome and X11, obs-studio compiled with this parameters:
 
-``cmake .. -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLEVLC=OFF -DENABLE_BROWSER=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DENABLE_AJA=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab``
+``cmake .. -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLEVLC=OFF -DENABLE_BROWSER=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DENABLE_AJA=OFF -DENABLE_SCRIPTING=OFF -DENABLE_DECKLINK=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab -DCCACHE_SUPPORT=OFF``
 
 
 OBS Studio <https://obsproject.com>
