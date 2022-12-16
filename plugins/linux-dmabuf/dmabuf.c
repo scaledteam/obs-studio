@@ -74,8 +74,8 @@ typedef struct {
 	int dma_buf_fd;
 	drmModeFBPtr fb;
 	int drmfd;
-	int width;
-	int height;
+	uint32_t width;
+	uint32_t height;
 } dmabuf_source_t;
 
 // get planes directly
@@ -97,12 +97,21 @@ static uint32_t prepareImage(void *data, const int fd)
 			context->plane = plane;
 			
 			if (plane->fb_id != 0) {
-				context->lastGoodPlane = i;
-				fb_id = plane->fb_id;
-				//MSG("%d, %#x", i, fb_id);
-				
+				drmModeFBPtr fb = drmModeGetFB(fd, plane->fb_id);
+				if (fb->handle) {
+					
+					// check if it's cursor image
+					if (fb->width != 256 && fb->height != 256) {
+						context->lastGoodPlane = i;
+						fb_id = plane->fb_id;
+						
+						drmModeFreeFB(fb);
+						drmModeFreePlane(plane);
+						break;
+					}
+				}
+				drmModeFreeFB(fb);
 				drmModeFreePlane(plane);
-				break;
 			}
 			else {
 				drmModeFreePlane(plane);
@@ -161,6 +170,7 @@ static void dmabuf_source_open(dmabuf_source_t *ctx)
 	context->dma_buf_fd = -1;
 	drmModeFBPtr fb = drmModeGetFB(drmfd, fb_id);
 	ctx->fb = fb;
+	
 	if (!fb->handle) {
 		blog(LOG_DEBUG, "Not permitted to get fb handles.");
 		
@@ -272,13 +282,18 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 	ctx->source = source;
 
 	// cursor
-	ctx->xcb = xcb_connect(NULL, NULL);
-	if (!ctx->xcb || xcb_connection_has_error(ctx->xcb)) {
-		blog(LOG_ERROR,
-		     "Unable to open X display, cursor will not be available");
-	}
+	if (obs_get_nix_platform() == OBS_NIX_PLATFORM_X11_EGL) {
+		ctx->xcb = xcb_connect(NULL, NULL);
+		if (!ctx->xcb || xcb_connection_has_error(ctx->xcb)) {
+			blog(LOG_ERROR,
+			     "Unable to open X display, cursor will not be available");
+		}
 
-	ctx->cursor = xcb_xcursor_init(ctx->xcb);
+		ctx->cursor = xcb_xcursor_init(ctx->xcb);
+	}
+	else {
+		ctx->show_cursor = false;
+	}
 
 	dmabuf_source_update(ctx, settings);
 	return ctx;
@@ -306,11 +321,13 @@ static void dmabuf_source_destroy(void *data)
 	dmabuf_source_close(ctx);
 	dmabuf_source_close_fds(ctx);
 
-	if (ctx->cursor)
-		xcb_xcursor_destroy(ctx->cursor);
+	if (obs_get_nix_platform() == OBS_NIX_PLATFORM_X11_EGL) {
+		if (ctx->cursor)
+			xcb_xcursor_destroy(ctx->cursor);
 
-	if (ctx->xcb)
-		xcb_disconnect(ctx->xcb);
+		if (ctx->xcb)
+			xcb_disconnect(ctx->xcb);
+	}
 
 	bfree(data);
 }
@@ -333,10 +350,15 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 	else {
 		if (ctx->dma_buf_fd >= 0)
 			close(ctx->dma_buf_fd);
-		if (ctx->fb)
+		if (ctx->fb != NULL){
 			drmModeFreeFB(ctx->fb);
-			
+			ctx->fb = NULL;
+		}
+		
 		drmModeFBPtr fb = drmModeGetFB(ctx->drmfd, fb_id);
+		if (fb == NULL)
+			return;
+		
 		if (!fb->handle) {
 			blog(LOG_ERROR, "Not permitted to get fb handles");
 			
@@ -346,6 +368,11 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 			return;
 		}
 		ctx->fb = fb;
+		
+		if (ctx->width != fb->width || ctx->height != fb->height)
+			ctx->lastGoodPlane = 0;
+		ctx->width = fb->width;
+		ctx->height = fb->height;
 		
 		EGLAttrib eimg_attrs[] = {
 			EGL_WIDTH, fb->width,
