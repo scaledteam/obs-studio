@@ -98,6 +98,10 @@ static uint32_t prepareImage(void *data, const int fd)
 			
 			if (plane->fb_id != 0) {
 				drmModeFBPtr fb = drmModeGetFB(fd, plane->fb_id);
+				if (fb == NULL) {
+					//ctx->lastGoodPlane = 0;
+					return 0;
+				}
 				if (fb->handle) {
 					
 					// check if it's cursor image
@@ -168,9 +172,14 @@ static void dmabuf_source_open(dmabuf_source_t *ctx)
 	}
 
 	context->dma_buf_fd = -1;
+	ctx->lastGoodPlane = 0;
 	drmModeFBPtr fb = drmModeGetFB(drmfd, fb_id);
 	ctx->fb = fb;
 	
+	if (fb == NULL) {
+		//ctx->lastGoodPlane = 0;
+		return;
+	}
 	if (!fb->handle) {
 		blog(LOG_DEBUG, "Not permitted to get fb handles.");
 		
@@ -356,8 +365,12 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 		}
 		
 		drmModeFBPtr fb = drmModeGetFB(ctx->drmfd, fb_id);
-		if (fb == NULL)
+		
+		if (fb == NULL) {
+			//ctx->lastGoodPlane = 0;
 			return;
+		}
+		
 		
 		if (!fb->handle) {
 			blog(LOG_ERROR, "Not permitted to get fb handles");
@@ -369,8 +382,11 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 		}
 		ctx->fb = fb;
 		
-		if (ctx->width != fb->width || ctx->height != fb->height)
+		if (ctx->width != fb->width || ctx->height != fb->height) {
 			ctx->lastGoodPlane = 0;
+			gs_texture_destroy(ctx->texture);
+			ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
+		}
 		ctx->width = fb->width;
 		ctx->height = fb->height;
 		
