@@ -39,7 +39,7 @@ General guide to building
 
 My personal setup
 -------------------
-I use Debian Testing (2022-11-04) with Gnome and X11, obs-studio compiled with this parameters:
+I use Debian Testing (2022-11-04) with Gnome and Wayland (previously used with X11), obs-studio compiled with this parameters:
 
 ``cmake .. -DCMAKE_C_FLAGS=-march=native -DCMAKE_CXX_FLAGS=-march=native -DENABLE_WEBSOCKET=OFF -DENABLE_VST=OFF -DENABLE_VLC=OFF -DENABLE_AJA=OFF -DENABLE_SCRIPTING=OFF -DENABLE_SCRIPTING_LUA=OFF -DENABLE_SCRIPTING_PYTHON=OFF -DENABLE_DECKLINK=OFF -DOBS_VERSION_OVERRIDE=28.1.0-kmsgrab -DCCACHE_SUPPORT=OFF -DENABLE_PIPEWIRE=OFF -DENABLE_WHATSNEW=OFF -DENABLE_SPEEXDSP=OFF -DENABLE_BROWSER=OFF``
 
