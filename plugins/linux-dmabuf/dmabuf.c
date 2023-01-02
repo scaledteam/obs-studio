@@ -196,18 +196,18 @@ drmModeFB2Ptr prepareImage(int drmfd) {
 					continue;
 				}
 				if (fb->handles[0]) {
+					// Most likely cursor
 					if (fb->width == 256 && fb->height == 256)
 						continue;
 				}
-				//drmModeFreeFB2(fb);
 				
 				lastGoodPlane = i;
 				fb_id = plane->fb_id;
 				//MSG("%d, %#x", i, fb_id);
 				
 				drmModeFreePlane(plane);
+				drmModeFreePlaneResources(planes);
 				return fb;
-				break;
 			}
 			else {
 				drmModeFreePlane(plane);
@@ -215,10 +215,10 @@ drmModeFB2Ptr prepareImage(int drmfd) {
 		}
 	}
 	else {
+		drmModeFreePlaneResources(planes);
 		return drmModeGetFB2(drmfd, fb_id);
 	}
 	
-	drmModeFreePlaneResources(planes);
 	
 	//MSG("%#x", fb_id);
 	return NULL;
@@ -247,7 +247,12 @@ static void dmabuf_source_close(dmabuf_source_t *ctx)
 {
 	blog(LOG_DEBUG, "dmabuf_source_close %p", ctx);
 
-	cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+	if (ctx->dma_buf_fd != NULL) {
+		cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+		
+		free(ctx->dma_buf_fd);
+		ctx->dma_buf_fd = NULL;
+	}
 	
 	if (ctx->eimage != EGL_NO_IMAGE) {
 		eglDestroyImage(ctx->edisp, ctx->eimage);
@@ -281,20 +286,25 @@ static void dmabuf_source_open(dmabuf_source_t *ctx)
 	ctx->edisp = edisp;
 	
 	// Find DRM video source
+	ctx->dma_buf_fd = NULL;
+	ctx->nplanes = 0;
 	ctx->lastGoodPlane = 0;
-	ctx->dma_buf_fd = (int*)malloc(sizeof(int)*4);
-	
 	ctx->fb = prepareImage(drmfd);
 	
-	ctx->nplanes = 0;
+	if (ctx->fb == NULL) {
+		blog(LOG_ERROR, "FB Handle is NULL.");
+		dmabuf_source_close(ctx);
+		goto exit;
+	}
+	
+	ctx->dma_buf_fd = (int*)malloc(sizeof(int)*4);
 	initDmaBufFDs(drmfd, ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
 	
 	blog(LOG_DEBUG, "Number of planes: %d", ctx->nplanes);
 	if (ctx->nplanes == 0) {
 		blog(LOG_ERROR, "Not permitted to get fb handles.");
-		cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
-		close(drmfd);
-		return 0;
+		dmabuf_source_close(ctx);
+		goto exit;
 	}
 
 	blog(LOG_DEBUG, "KMSGrab: %dx%d %d", ctx->fb->width, ctx->fb->height, ctx->fb->pitches[0]);
@@ -391,12 +401,6 @@ static void *dmabuf_source_create(obs_data_t *settings, obs_source_t *source)
 	return ctx;
 }
 
-static void dmabuf_source_close_fds(dmabuf_source_t *ctx)
-{
-	if (ctx->dma_buf_fd >= 0)
-		close(ctx->dma_buf_fd);
-}
-
 static void dmabuf_source_destroy(void *data)
 {
 	dmabuf_source_t *ctx = data;
@@ -405,11 +409,11 @@ static void dmabuf_source_destroy(void *data)
 	if (ctx->texture)
 		gs_texture_destroy(ctx->texture);
 		
-	if (ctx->drmfd)
-		close(ctx->drmfd);
 
 	dmabuf_source_close(ctx);
-	dmabuf_source_close_fds(ctx);
+	
+	if (ctx->drmfd)
+		close(ctx->drmfd);
 
 	if (obs_get_nix_platform() == OBS_NIX_PLATFORM_X11_EGL) {
 		if (ctx->cursor)
@@ -434,6 +438,11 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 	cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
 	
 	ctx->fb = prepareImage(ctx->drmfd);
+	
+	if (ctx->fb == NULL) {
+		blog(LOG_ERROR, "FB Handle is NULL.");
+		return;
+	}
 	if (ctx->width != ctx->fb->width || ctx->height != ctx->fb->height) {
 		//ctx->lastGoodPlane = 0;
 		gs_texture_destroy(ctx->texture);
