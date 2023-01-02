@@ -47,11 +47,6 @@ struct gl_platform {
 	EGLSurface pbuffer;
 };
 
-/*typedef struct {
-	drmsend_response_t resp;
-	int fb_fds[OBS_DRMSEND_MAX_FRAMEBUFFERS];
-} dmabuf_source_fblist_t;*/
-
 #include <xf86drm.h>
 #include <libdrm/drm_fourcc.h>
 #include <xf86drmMode.h>
@@ -71,63 +66,180 @@ typedef struct {
 	drmModePlanePtr plane;
 	uint32_t lastGoodPlane;
 	
-	int dma_buf_fd;
-	drmModeFBPtr fb;
+	int* dma_buf_fd;
+	drmModeFB2Ptr fb;
 	int drmfd;
+	int nplanes;
 	uint32_t width;
 	uint32_t height;
 } dmabuf_source_t;
 
-// get planes directly
-static uint32_t prepareImage(void *data, const int fd)
+
+static EGLImageKHR
+create_dmabuf_egl_image(EGLDisplay egl_display, unsigned int width,
+			unsigned int height, uint32_t drm_format,
+			uint32_t n_planes, const int *fds,
+			const uint32_t *strides, const uint32_t *offsets,
+			const uint64_t modifier)
 {
-	dmabuf_source_t *context = data;
+	EGLAttrib attribs[47];
+	int atti = 0;
+
+	/* This requires the Mesa commit in
+	 * Mesa 10.3 (08264e5dad4df448e7718e782ad9077902089a07) or
+	 * Mesa 10.2.7 (55d28925e6109a4afd61f109e845a8a51bd17652).
+	 * Otherwise Mesa closes the fd behind our back and re-importing
+	 * will fail.
+	 * https://bugs.freedesktop.org/show_bug.cgi?id=76188
+	 * */
+
+	attribs[atti++] = EGL_WIDTH;
+	attribs[atti++] = width;
+	attribs[atti++] = EGL_HEIGHT;
+	attribs[atti++] = height;
+	attribs[atti++] = EGL_LINUX_DRM_FOURCC_EXT;
+	attribs[atti++] = drm_format;
+
+	if (n_planes > 0) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+		attribs[atti++] = fds[0];
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+		attribs[atti++] = offsets[0];
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+		attribs[atti++] = strides[0];
+		if (modifier) {
+			attribs[atti++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+			attribs[atti++] = modifier & 0xFFFFFFFF;
+			attribs[atti++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+			attribs[atti++] = modifier >> 32;
+		}
+	}
+
+	if (n_planes > 1) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_FD_EXT;
+		attribs[atti++] = fds[1];
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_OFFSET_EXT;
+		attribs[atti++] = offsets[1];
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_PITCH_EXT;
+		attribs[atti++] = strides[1];
+		if (modifier) {
+			attribs[atti++] = EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT;
+			attribs[atti++] = modifier & 0xFFFFFFFF;
+			attribs[atti++] = EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT;
+			attribs[atti++] = modifier >> 32;
+		}
+	}
+
+	if (n_planes > 2) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_FD_EXT;
+		attribs[atti++] = fds[2];
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_OFFSET_EXT;
+		attribs[atti++] = offsets[2];
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_PITCH_EXT;
+		attribs[atti++] = strides[2];
+		if (modifier) {
+			attribs[atti++] = EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT;
+			attribs[atti++] = modifier & 0xFFFFFFFF;
+			attribs[atti++] = EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT;
+			attribs[atti++] = modifier >> 32;
+		}
+	}
+
+	if (n_planes > 3) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE3_FD_EXT;
+		attribs[atti++] = fds[3];
+		attribs[atti++] = EGL_DMA_BUF_PLANE3_OFFSET_EXT;
+		attribs[atti++] = offsets[3];
+		attribs[atti++] = EGL_DMA_BUF_PLANE3_PITCH_EXT;
+		attribs[atti++] = strides[3];
+		if (modifier) {
+			attribs[atti++] = EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT;
+			attribs[atti++] = modifier & 0xFFFFFFFF;
+			attribs[atti++] = EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT;
+			attribs[atti++] = modifier >> 32;
+		}
+	}
+
+	attribs[atti++] = EGL_NONE;
+
+	return eglCreateImage(egl_display, EGL_NO_CONTEXT,
+			      EGL_LINUX_DMA_BUF_EXT, 0, attribs);
+}
+
+
+typedef struct {
+	int width, height;
+	uint32_t fourcc;
+	int fd, offset, pitch;
+} DmaBuf;
+
+uint32_t lastGoodPlane = 0;
+
+drmModeFB2Ptr prepareImage(int drmfd) {
 	
-	drmModePlaneResPtr planes = drmModeGetPlaneResources(fd);
+	drmModePlaneResPtr planes = drmModeGetPlaneResources(drmfd);
 	
 	// Check the first plane (or last good)
-	drmModePlanePtr plane = drmModeGetPlane(fd, planes->planes[context->lastGoodPlane]);
+	drmModePlanePtr plane = drmModeGetPlane(drmfd, planes->planes[lastGoodPlane]);
 	uint32_t fb_id = plane->fb_id;
 	drmModeFreePlane(plane);
 	
 	// Find a good plane
 	if (fb_id == 0) {
 		for (uint32_t i = 0; i < planes->count_planes; ++i) {
-			drmModePlanePtr plane = drmModeGetPlane(fd, planes->planes[i]);
-			context->plane = plane;
+			drmModePlanePtr plane = drmModeGetPlane(drmfd, planes->planes[i]);
 			
 			if (plane->fb_id != 0) {
-				drmModeFBPtr fb = drmModeGetFB(fd, plane->fb_id);
+				drmModeFB2Ptr fb = drmModeGetFB2(drmfd, plane->fb_id);
 				if (fb == NULL) {
 					//ctx->lastGoodPlane = 0;
-					return 0;
+					continue;
 				}
-				if (fb->handle) {
-					
-					// check if it's cursor image
-					if (fb->width != 256 && fb->height != 256) {
-						context->lastGoodPlane = i;
-						fb_id = plane->fb_id;
-						
-						drmModeFreeFB(fb);
-						drmModeFreePlane(plane);
-						break;
-					}
+				if (fb->handles[0]) {
+					if (fb->width == 256 && fb->height == 256)
+						continue;
 				}
-				drmModeFreeFB(fb);
+				//drmModeFreeFB2(fb);
+				
+				lastGoodPlane = i;
+				fb_id = plane->fb_id;
+				//MSG("%d, %#x", i, fb_id);
+				
 				drmModeFreePlane(plane);
+				return fb;
+				break;
 			}
 			else {
 				drmModeFreePlane(plane);
 			}
 		}
 	}
+	else {
+		return drmModeGetFB2(drmfd, fb_id);
+	}
 	
 	drmModeFreePlaneResources(planes);
 	
 	//MSG("%#x", fb_id);
-	//blog(LOG_ERROR, "prepare image fb_id is %#x", fb_id);
-	return fb_id;
+	return NULL;
+}
+
+void initDmaBufFDs(int drmfd, drmModeFB2Ptr fb, int* dma_buf_fd, int* nplanes) {
+	for (int i = 0; i < 4; i++) {
+		if (fb->handles[i] == 0) {
+			*nplanes = i;
+			break;
+		}
+		drmPrimeHandleToFD(drmfd, fb->handles[i], O_RDONLY, (dma_buf_fd + i));
+	}
+}
+
+void cleanupDmaBufFDs(drmModeFB2Ptr fb, int* dma_buf_fd, int* nplanes) {
+	for (int i = 0; i < *nplanes; i++)
+		if (dma_buf_fd[i] >= 0)
+			close(dma_buf_fd[i]);
+	if (fb)
+		drmModeFreeFB2(fb);
 }
 
 
@@ -135,6 +247,8 @@ static void dmabuf_source_close(dmabuf_source_t *ctx)
 {
 	blog(LOG_DEBUG, "dmabuf_source_close %p", ctx);
 
+	cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+	
 	if (ctx->eimage != EGL_NO_IMAGE) {
 		eglDestroyImage(ctx->edisp, ctx->eimage);
 		ctx->eimage = EGL_NO_IMAGE;
@@ -144,7 +258,6 @@ static void dmabuf_source_close(dmabuf_source_t *ctx)
 static void dmabuf_source_open(dmabuf_source_t *ctx)
 {
 	blog(LOG_DEBUG, "dmabuf_source_open %p %#x", ctx);
-	dmabuf_source_t *context = ctx;
 	
 	const char *card = "/dev/dri/card0";
 
@@ -160,68 +273,38 @@ static void dmabuf_source_open(dmabuf_source_t *ctx)
 	const int available = drmAvailable();
 	if (!available)
 		return;
-		
-	// Find DRM video source
-	//uint32_t fb_id = prepareImage(ctx, drmfd);
-	uint32_t fb_id = prepareImage(ctx, drmfd);
-	//blog(LOG_INFO, "Got fb_id=%#x", fb_id);
-
-	if (fb_id == 0) {
-		blog(LOG_DEBUG, "Not found fb_id");
-		return;
-	}
-
-	context->dma_buf_fd = -1;
-	ctx->lastGoodPlane = 0;
-	drmModeFBPtr fb = drmModeGetFB(drmfd, fb_id);
-	ctx->fb = fb;
-	
-	if (fb == NULL) {
-		//ctx->lastGoodPlane = 0;
-		return;
-	}
-	if (!fb->handle) {
-		blog(LOG_DEBUG, "Not permitted to get fb handles.");
-		
-		if (context->dma_buf_fd >= 0)
-			close(context->dma_buf_fd);
-		if (ctx->fb)
-			drmModeFreeFB(ctx->fb);
-		close(drmfd);
-		return;
-	}
-
-	blog(LOG_DEBUG, "Using framebuffer id=%#x (index=%d)", fb_id, index);
-
-	//const drmsend_framebuffer_t *fb = ctx->fbs.resp.framebuffers + index;
-
-	blog(LOG_DEBUG, "%dx%d %d", fb->width, fb->height, fb->pitch);
 
 	obs_enter_graphics();
 	
-	drmPrimeHandleToFD(drmfd, fb->handle, 0, &context->dma_buf_fd);
-
 	const graphics_t *const graphics = gs_get_context();
 	const EGLDisplay edisp = graphics->device->plat->edisplay;
 	ctx->edisp = edisp;
+	
+	// Find DRM video source
+	ctx->lastGoodPlane = 0;
+	ctx->dma_buf_fd = (int*)malloc(sizeof(int)*4);
+	
+	ctx->fb = prepareImage(drmfd);
+	
+	ctx->nplanes = 0;
+	initDmaBufFDs(drmfd, ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+	
+	blog(LOG_DEBUG, "Number of planes: %d", ctx->nplanes);
+	if (ctx->nplanes == 0) {
+		blog(LOG_ERROR, "Not permitted to get fb handles.");
+		cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+		close(drmfd);
+		return 0;
+	}
 
-	/* clang-format off */
-	// FIXME check for EGL_EXT_image_dma_buf_import
-	EGLAttrib eimg_attrs[] = {
-		EGL_WIDTH, fb->width,
-		EGL_HEIGHT, fb->height,
-		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
-		EGL_DMA_BUF_PLANE0_FD_EXT, context->dma_buf_fd,
-		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-		EGL_DMA_BUF_PLANE0_PITCH_EXT, fb->pitch,
-		EGL_NONE
-	};
-	/* clang-format on */
+	blog(LOG_DEBUG, "KMSGrab: %dx%d %d", ctx->fb->width, ctx->fb->height, ctx->fb->pitches[0]);
 
-	ctx->width = fb->width;
-	ctx->height = fb->height;
-	ctx->eimage = eglCreateImage(edisp, EGL_NO_CONTEXT,
-				     EGL_LINUX_DMA_BUF_EXT, 0, eimg_attrs);
+
+	ctx->width = ctx->fb->width;
+	ctx->height = ctx->fb->height;
+	ctx->eimage = create_dmabuf_egl_image(ctx->edisp, ctx->fb->width, ctx->fb->height,
+					    DRM_FORMAT_XRGB8888, ctx->nplanes, ctx->dma_buf_fd, 
+					    ctx->fb->pitches, ctx->fb->offsets, ctx->fb->modifier);
 
 	if (!ctx->eimage) {
 		// FIXME stringify error
@@ -232,7 +315,7 @@ static void dmabuf_source_open(dmabuf_source_t *ctx)
 
 	// FIXME handle fourcc?
 	if (!ctx->texture)
-		ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
+		ctx->texture = gs_texture_create(ctx->fb->width, ctx->fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
 	const GLuint gltex = *(GLuint *)gs_texture_get_obj(ctx->texture);
 	blog(LOG_DEBUG, "gltex = %x", gltex);
 	glBindTexture(GL_TEXTURE_2D, gltex);
@@ -312,8 +395,6 @@ static void dmabuf_source_close_fds(dmabuf_source_t *ctx)
 {
 	if (ctx->dma_buf_fd >= 0)
 		close(ctx->dma_buf_fd);
-	if (ctx->fb)
-		drmModeFreeFB(ctx->fb);
 }
 
 static void dmabuf_source_destroy(void *data)
@@ -350,69 +431,27 @@ static void dmabuf_source_render(void *data, gs_effect_t *effect)
 
 	effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	
-	// Find DRM video source
-	uint32_t fb_id = prepareImage(data, ctx->drmfd);
-
-	if (fb_id == 0) {
-		blog(LOG_ERROR, "Not found fb_id");
+	cleanupDmaBufFDs(ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+	
+	ctx->fb = prepareImage(ctx->drmfd);
+	if (ctx->width != ctx->fb->width || ctx->height != ctx->fb->height) {
+		//ctx->lastGoodPlane = 0;
+		gs_texture_destroy(ctx->texture);
+		ctx->width = ctx->fb->width;
+		ctx->height = ctx->fb->height;
+		ctx->texture = gs_texture_create(ctx->fb->width, ctx->fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
 	}
-	else {
-		if (ctx->dma_buf_fd >= 0)
-			close(ctx->dma_buf_fd);
-		if (ctx->fb != NULL){
-			drmModeFreeFB(ctx->fb);
-			ctx->fb = NULL;
-		}
-		
-		drmModeFBPtr fb = drmModeGetFB(ctx->drmfd, fb_id);
-		
-		if (fb == NULL) {
-			//ctx->lastGoodPlane = 0;
-			return;
-		}
-		
-		
-		if (!fb->handle) {
-			blog(LOG_ERROR, "Not permitted to get fb handles");
-			
-			if (fb)
-				drmModeFreeFB(fb);
-			close(ctx->drmfd);
-			return;
-		}
-		ctx->fb = fb;
-		
-		if (ctx->width != fb->width || ctx->height != fb->height) {
-			ctx->lastGoodPlane = 0;
-			gs_texture_destroy(ctx->texture);
-			ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
-		}
-		ctx->width = fb->width;
-		ctx->height = fb->height;
-		
-		EGLAttrib eimg_attrs[] = {
-			EGL_WIDTH, fb->width,
-			EGL_HEIGHT, fb->height,
-			EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
-			EGL_DMA_BUF_PLANE0_FD_EXT, ctx->dma_buf_fd,
-			EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-			EGL_DMA_BUF_PLANE0_PITCH_EXT, fb->pitch,
-			EGL_NONE
-		};
-		
-		drmPrimeHandleToFD(ctx->drmfd, fb->handle, 0, &ctx->dma_buf_fd);
-		eglDestroyImage(ctx->edisp, ctx->eimage);
-		ctx->eimage = eglCreateImage(ctx->edisp, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0,
-			eimg_attrs);
-		
-		//gs_texture_destroy(ctx->texture);
-		//ctx->texture = gs_texture_create(fb->width, fb->height, GS_BGRA, 1, NULL, GS_DYNAMIC);
-		const GLuint gltex = *(GLuint *)gs_texture_get_obj(ctx->texture);
-		//blog(LOG_DEBUG, "gltex = %x", gltex);
-		glBindTexture(GL_TEXTURE_2D, gltex);
-		
-		glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, ctx->eimage);
-	}
+	initDmaBufFDs(ctx->drmfd, ctx->fb, ctx->dma_buf_fd, &ctx->nplanes);
+	
+	eglDestroyImage(ctx->edisp, ctx->eimage);
+	ctx->eimage = create_dmabuf_egl_image(ctx->edisp, ctx->fb->width, ctx->fb->height,
+					    DRM_FORMAT_XRGB8888, ctx->nplanes, ctx->dma_buf_fd, 
+					    ctx->fb->pitches, ctx->fb->offsets, ctx->fb->modifier);
+	
+	const GLuint gltex = *(GLuint *)gs_texture_get_obj(ctx->texture);
+	glBindTexture(GL_TEXTURE_2D, gltex);
+	
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, ctx->eimage);
 
 	gs_draw_sprite(ctx->texture, 0, 0, 0);
 
@@ -430,34 +469,11 @@ static void dmabuf_source_get_defaults(obs_data_t *defaults)
 static obs_properties_t *dmabuf_source_get_properties(void *data)
 {
 	dmabuf_source_t *ctx = data;
-	/*blog(LOG_DEBUG, "dmabuf_source_get_properties %p", ctx);
-
-	dmabuf_source_fblist_t stack_list = {0};
-
-	if (!dmabuf_source_receive_framebuffers(&stack_list)) {
-		blog(LOG_ERROR, "Unable to enumerate DRM/KMS framebuffers");
-		return NULL;
-	}*/
 
 	obs_properties_t *props = obs_properties_create();
 
 	obs_properties_add_bool(props, "show_cursor",
 				obs_module_text("CaptureCursor"));
-
-	/*obs_property_t *fb_list = obs_properties_add_list(
-		props, "framebuffer", "Framebuffer to capture",
-		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-
-	for (int i = 0; i < stack_list.resp.num_framebuffers; ++i) {
-		const drmsend_framebuffer_t *fb =
-			stack_list.resp.framebuffers + i;
-		char buf[128];
-		sprintf(buf, "%dx%d (%#x)", fb->width, fb->height, fb->fb_id);
-		obs_property_list_add_int(fb_list, buf, fb->fb_id);
-	}
-
-	dmabuf_source_close_fds(ctx);
-	memcpy(&ctx->fbs, &stack_list, sizeof(stack_list));*/
 
 	return props;
 }
